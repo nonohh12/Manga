@@ -26,28 +26,31 @@ def analyze_and_narrate(image_b64):
         try:
             r = requests.post(url, headers=headers, json=data, timeout=30)
             if r.status_code == 200:
-                # FIX: Remove any weird characters the AI might add
-                clean_json = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', r.json()['choices'][0]['message']['content'])
-                return clean_json
+                content = r.json()['choices'][0]['message']['content']
+                # Force dictionary check
+                parsed = json.loads(content)
+                if isinstance(parsed, list): parsed = parsed[0]
+                return parsed
         except: pass
         time.sleep(5)
-    return '{"is_junk": "YES", "script": "", "action_y": 0}'
+    return {"is_junk": "YES", "script": "", "action_y": 0}
 
 def build_human_style_clip(img, aud, out, action_y):
+    # Get duration safely
     duration_res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(aud)], capture_output=True, text=True)
     duration = duration_res.stdout.strip() or "10.0"
     
-    # SIMPLIFIED FILTER: No complex math to avoid 'Status 8'
-    # We use a steady slow zoom which looks very professional
+    # MEMORY SAFE FILTER: We scale to a smaller width first to stop 'Status 8'
+    # We also use escaped quotes for the math to fix the 'No such filter' error
     vf = (
-        f"scale=1440:-1,"
-        f"crop=1080:1920:0:min(ih-oh, ih*({action_y}/100)),"
+        f"scale=1080:-1,"
+        f"crop=1080:1920:0:ih*{action_y}/100,"
         f"zoompan=z='zoom+0.0005':d=1:s=1080x1920:fps=25"
     )
     
     subprocess.run([
         "ffmpeg", "-y", "-loop", "1", "-i", str(img), "-i", str(aud),
-        "-vf", vf, "-c:v", "libx264", "-t", duration, "-pix_fmt", "yuv420p", str(out)
+        "-vf", vf, "-c:v", "libx264", "-t", duration, "-pix_fmt", "yuv420p", "-preset", "veryfast", str(out)
     ], check=True)
 
 def run():
@@ -61,29 +64,32 @@ def run():
         with zipfile.ZipFile(cbz, 'r') as z: z.extractall(extract_to)
         
         imgs = sorted([f for f in extract_to.rglob("*") if f.suffix.lower() in ['.jpg', '.png', '.webp', '.jpeg']])
-        for i, img in enumerate(imgs[:6]): # 6 images per chapter
+        for i, img in enumerate(imgs[:6]):
             print(f"🎬 Processing: {img.name}")
             with open(img, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             
             try:
-                ai_raw = analyze_and_narrate(b64)
-                ai_data = json.loads(ai_raw)
+                ai_data = analyze_and_narrate(b64)
                 
                 if ai_data.get('is_junk') == "YES":
+                    print(f"  ⏭️ Skipping junk: {img.name}")
                     continue
                     
                 aud = WORK_DIR / f"{cbz.stem}_{i}.mp3"
                 if generate_audio(ai_data['script'], "am_adam", aud):
                     out_mp4 = WORK_DIR / f"{cbz.stem}_{i}.mp4"
+                    print(f"  🎥 Rendering scene at {ai_data['action_y']}%...")
                     build_human_style_clip(img, aud, out_mp4, ai_data['action_y'])
                     all_clips.append(out_mp4)
             except Exception as e:
-                print(f"⚠️ Skip: {e}")
+                print(f"  ⚠️ Error: {e}")
 
     if all_clips:
+        print("🎞️ Merging final video...")
         with open(WORK_DIR / "list.txt", "w") as f:
-            for clip in all_clips: f.write(f"file '{clip.name}'\n")
+            for clip in all_clips: f.write(f"file '{clip.absolute()}'\n")
+        
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(WORK_DIR / "list.txt"), "-c", "copy", str(OUTPUT_DIR / "Omniscient_Reader_Recap.mp4")], check=True)
 
 if __name__ == "__main__":
