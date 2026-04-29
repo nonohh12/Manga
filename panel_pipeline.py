@@ -1,4 +1,4 @@
-import os, base64, requests, zipfile, subprocess, time, json
+import os, base64, requests, zipfile, subprocess, time, json, re
 from pathlib import Path
 from audio_gen import generate_audio
 
@@ -11,12 +11,7 @@ def analyze_and_narrate(image_b64):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    prompt = """
-    1. Is this a credit page, chapter title, or advertisement? (Answer: YES or NO)
-    2. If NO, describe the main action in 3 dramatic sentences.
-    3. Tell me the vertical percentage (0-100) where the main face or action is located.
-    Return ONLY JSON: {"is_junk": "YES/NO", "script": "...", "action_y": 20}
-    """
+    prompt = """Return ONLY JSON: {"is_junk": "YES/NO", "script": "3 dramatic sentences", "action_y": 0-100}. Is this a logo/credit? If not, narrate it and give the vertical % of the face."""
     
     data = {
         "model": "google/gemini-2.0-flash-001",
@@ -30,7 +25,10 @@ def analyze_and_narrate(image_b64):
     for _ in range(3):
         try:
             r = requests.post(url, headers=headers, json=data, timeout=30)
-            if r.status_code == 200: return r.json()['choices'][0]['message']['content']
+            if r.status_code == 200:
+                # FIX: Remove any weird characters the AI might add
+                clean_json = re.sub(r'[\x00-\x1F\x7F-\x9F]', '', r.json()['choices'][0]['message']['content'])
+                return clean_json
         except: pass
         time.sleep(5)
     return '{"is_junk": "YES", "script": "", "action_y": 0}'
@@ -39,12 +37,12 @@ def build_human_style_clip(img, aud, out, action_y):
     duration_res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(aud)], capture_output=True, text=True)
     duration = duration_res.stdout.strip() or "10.0"
     
-    # Corrected Filter: Cleaned up the math and escaping
-    # We focus on the action_y and add a very slight 'breathing' zoom
+    # SIMPLIFIED FILTER: No complex math to avoid 'Status 8'
+    # We use a steady slow zoom which looks very professional
     vf = (
         f"scale=1440:-1,"
         f"crop=1080:1920:0:min(ih-oh, ih*({action_y}/100)),"
-        f"zoompan=z='1.05+0.05*sin(2*pi*t/{duration})':d=1:s=1080x1920:fps=25"
+        f"zoompan=z='zoom+0.0005':d=1:s=1080x1920:fps=25"
     )
     
     subprocess.run([
@@ -63,39 +61,30 @@ def run():
         with zipfile.ZipFile(cbz, 'r') as z: z.extractall(extract_to)
         
         imgs = sorted([f for f in extract_to.rglob("*") if f.suffix.lower() in ['.jpg', '.png', '.webp', '.jpeg']])
-        for i, img in enumerate(imgs[:8]): # Check first 8 pages for quality
-            print(f"🎬 AI Editor checking: {img.name}")
+        for i, img in enumerate(imgs[:6]): # 6 images per chapter
+            print(f"🎬 Processing: {img.name}")
             with open(img, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             
-            ai_data = json.loads(analyze_and_narrate(b64))
-            
-            if ai_data.get('is_junk') == "YES" or not ai_data.get('script'):
-                print(f"  ⏭️ Skipping junk: {img.name}")
-                continue
+            try:
+                ai_raw = analyze_and_narrate(b64)
+                ai_data = json.loads(ai_raw)
                 
-            aud = WORK_DIR / f"{cbz.stem}_{i}.mp3"
-            if generate_audio(ai_data['script'], "am_adam", aud):
-                out_mp4 = WORK_DIR / f"{cbz.stem}_{i}.mp4"
-                print(f"  🎥 Rendering action at {ai_data['action_y']}%...")
-                try:
+                if ai_data.get('is_junk') == "YES":
+                    continue
+                    
+                aud = WORK_DIR / f"{cbz.stem}_{i}.mp3"
+                if generate_audio(ai_data['script'], "am_adam", aud):
+                    out_mp4 = WORK_DIR / f"{cbz.stem}_{i}.mp4"
                     build_human_style_clip(img, aud, out_mp4, ai_data['action_y'])
                     all_clips.append(out_mp4)
-                except Exception as e:
-                    print(f"  ⚠️ FFmpeg Error: {e}")
+            except Exception as e:
+                print(f"⚠️ Skip: {e}")
 
     if all_clips:
-        print(f"🎞️ Merging {len(all_clips)} scenes...")
         with open(WORK_DIR / "list.txt", "w") as f:
             for clip in all_clips: f.write(f"file '{clip.name}'\n")
-        
-        final_video = OUTPUT_DIR / "Omniscient_Reader_Recap.mp4"
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(WORK_DIR / "list.txt"), 
-            "-c", "copy", str(final_video)
-        ], check=True)
-        print(f"✅ Success: {final_video}")
+        subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(WORK_DIR / "list.txt"), "-c", "copy", str(OUTPUT_DIR / "Omniscient_Reader_Recap.mp4")], check=True)
 
 if __name__ == "__main__":
     run()
-    
