@@ -5,17 +5,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Tools
+      - name: Setup Environment
         run: |
           sudo apt-get update
-          sudo apt-get install ffmpeg espeak-ng
-          pip install requests edge-tts kokoro soundfile numpy openai
+          sudo apt-get install -y ffmpeg
+          pip install requests edge-tts
       - name: Run Factory
         env:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
         run: python panel_pipeline.py
-      - name: Upload Video
+      - name: Upload Clips
         uses: actions/upload-artifact@v4
         with:
-          name: manga-video
-          path: workspace/clip_*.mp4
+          name: manga-clips
+          path: workspace/*.mp4
+          
