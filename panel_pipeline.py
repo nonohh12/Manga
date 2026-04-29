@@ -79,30 +79,59 @@ def get_duration(path):
 
 
 # ─────────────────────────────────────────────
-# 3. Build clip — audio-synced, no cuts
+# 3. Get image dimensions via ffprobe
+# ─────────────────────────────────────────────
+def get_image_size(img_path):
+    """Returns (width, height) of image using ffprobe."""
+    res = subprocess.run(
+        ["ffprobe", "-v", "error",
+         "-select_streams", "v:0",
+         "-show_entries", "stream=width,height",
+         "-of", "csv=p=0",
+         str(img_path)],
+        capture_output=True, text=True
+    )
+    try:
+        w, h = res.stdout.strip().split(",")
+        return int(w), int(h)
+    except:
+        return 800, 1920
+
+
+# ─────────────────────────────────────────────
+# 4. Build clip — audio-synced, no cuts
 # ─────────────────────────────────────────────
 def build_clip(img_path, aud_path, out_path, action_y):
     duration = get_duration(aud_path)
     # Add 0.3s buffer so audio never gets clipped at the end
     total_dur = duration + 0.3
 
-    fps        = 25
+    fps          = 25
     total_frames = int(fps * total_dur)
 
-    # Safe crop: clamp crop Y so it never goes out of bounds
-    # action_y is 0-100 representing where the face is vertically
-    # We crop a 1920-tall window from a scaled 1080-wide image
-    # The crop offset moves the window toward the action point
-    crop_y_expr = f"max(0, min(ih-1920, ih*{action_y}/100 - 960))"
+    # ── Calculate crop Y entirely in Python (no min/max in ffmpeg expr) ──
+    # Step 1: figure out scaled height after scale=1080:-2
+    orig_w, orig_h = get_image_size(img_path)
+    scaled_h = int(orig_h * 1080 / orig_w)
+    # Step 2: pad height to at least 1920
+    padded_h = max(scaled_h, 1920)
+    # Step 3: where should the 1920-window start to center on action_y?
+    center_px = int(padded_h * action_y / 100)
+    crop_y    = center_px - 960          # 960 = 1920/2
+    crop_y    = max(0, min(padded_h - 1920, crop_y))  # clamp safely in Python
+
+    # pad_y: offset to center image vertically inside padded canvas
+    pad_y = (padded_h - scaled_h) // 2
 
     # zoompan: slow subtle zoom, d=total_frames so it lasts full audio
-    # s=1080x1920 for portrait/Reels format
     vf = (
-        f"scale=1080:-2,"                                    # scale width to 1080, keep ratio
-        f"pad=1080:max(ih\\,1920):0:(max(ih\\,1920)-ih)/2," # pad height to at least 1920
-        f"crop=1080:1920:0:{crop_y_expr},"                  # crop to portrait with smart Y
-        f"zoompan=z='1+0.0003*on':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-        f":d={total_frames}:s=1080x1920:fps={fps}"          # zoom lasts exactly full duration
+        f"scale=1080:-2,"                           # scale width to 1080, keep ratio
+        f"pad=1080:{padded_h}:0:{pad_y},"          # pad to exact integer height
+        f"crop=1080:1920:0:{crop_y},"              # crop with Python-computed integer Y
+        f"zoompan=z='1+0.0003*on'"
+        f":x='iw/2-(iw/zoom/2)'"
+        f":y='ih/2-(ih/zoom/2)'"
+        f":d={total_frames}:s=1080x1920:fps={fps}" # zoom lasts exactly full duration
     )
 
     cmd = [
@@ -113,14 +142,14 @@ def build_clip(img_path, aud_path, out_path, action_y):
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
-        "-t", str(total_dur),          # video length = audio length + buffer
+        "-t", str(total_dur),   # video length = audio + buffer
         "-c:a", "aac",
         "-b:a", "128k",
-        "-shortest",                   # safety: stop at shorter of video/audio
+        "-shortest",            # safety net
         str(out_path)
     ]
 
-    print(f"  ⏱️  Duration: {duration:.2f}s | Frames: {total_frames} | CropY: {action_y}%")
+    print(f"  ⏱️  Duration: {duration:.2f}s | Frames: {total_frames} | CropY: {crop_y}px ({action_y}%) | PaddedH: {padded_h}")
     subprocess.run(cmd, check=True)
 
 
