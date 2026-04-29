@@ -1,34 +1,31 @@
 name: 🎬 Manga Recap Pipeline
 on: [workflow_dispatch]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: 🔍 Check Files Structure
-        run: |
-          echo "Current directory:"
-          ls -R
-          
-      - name: 🐍 Setup Python & Tools
+      - name: 📂 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Environment & Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install requests edge-tts
-          
-      - name: 🎬 Run Factory
+          sudo apt-get install -y ffmpeg espeak-ng libasound2
+          pip install requests edge-tts soundfile numpy openai
+
+      - name: 🏭 Run Production Factory
         env:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
         run: |
           mkdir -p workspace
+          mkdir -p output
           python3 panel_pipeline.py
-          
-      - name: 📤 Upload Results
+
+      - name: 📤 Download Final Recap Video
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manga-output
-          path: |
-            workspace/*.mp4
-            workspace/*.mp3
+          name: Full-Manga-Recap-Video
+          path: output/Omniscient_Reader_Recap.mp4
+          
