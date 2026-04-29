@@ -5,18 +5,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Environment
+      
+      - name: 🔍 Check Files Structure
+        run: |
+          echo "Current directory:"
+          ls -R
+          
+      - name: 🐍 Setup Python & Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           pip install requests edge-tts
-      - name: Run Factory
+          
+      - name: 🎬 Run Factory
         env:
           OPENROUTER_KEY: ${{ secrets.OPENROUTER_KEY }}
-        run: python panel_pipeline.py
-      - name: Upload Clips
+        run: |
+          mkdir -p workspace
+          python3 panel_pipeline.py
+          
+      - name: 📤 Upload Results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: manga-clips
-          path: workspace/*.mp4
-          
+          name: manga-output
+          path: |
+            workspace/*.mp4
+            workspace/*.mp3
